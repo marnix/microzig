@@ -487,7 +487,7 @@ pub fn SpiBus(comptime index: usize) type {
             // Enable the GPIO CLOCK
             regs.RCC.AHBENR.modify(.{ .IOPAEN = 1 });
 
-            // Configure the I2C PINs for ALternate Functions
+            // Configure the SPI PINs for Alternate Functions
             // 	- Select Alternate Function in MODER Register
             regs.GPIOA.MODER.modify(.{ .MODER5 = 0b10, .MODER6 = 0b10, .MODER7 = 0b10 });
             // 	- Select High SPEED for the PINs
@@ -503,6 +503,8 @@ pub fn SpiBus(comptime index: usize) type {
                 .SSM = 1,
                 .SSI = 1,
                 .RXONLY = 0,
+                // TODO: drive BIDIMODE via this driver too
+                .BIDIOE = 1, // so that we can set BIDIOE=0 to start reading, in BIDIMODE=1
                 .SPE = 1,
             });
             // the following configuration is assumed in `transceiveByte()`
@@ -536,37 +538,84 @@ pub fn SpiBus(comptime index: usize) type {
         }
 
         /// The basic operation in the current simplistic implementation:
-        /// send+receive a single byte.
-        /// Writing `null` writes an arbitrary byte (`undefined`), and
-        /// reading into `null` ignores the value received.
+        /// - in 4-wire / full-duplex mode, send+receive a single byte at the same time;
+        /// - in 3-wire / half-duplex / bidi mode, either send or receive a byte.
+        ///
+        /// In 4-wire mode, writing `null` writes an arbitrary byte (`undefined`),
+        /// and reading into `null` ignores the value received.
         pub fn transceiveByte(_: Self, optional_write_byte: ?u8, optional_read_pointer: ?*u8) !void {
+            var bidi_mode = regs.SPI1.CR1.read().BIDIMODE == 1;
+
+            if (bidi_mode) {
+                debugPrint("SPI1 is in BIDIMODE\r\n", .{});
+                // in BIDI mode we obviously cannot read and write at the same time
+                std.debug.assert((optional_read_pointer == null) != (optional_write_byte == null));
+            }
 
             // SPIx_DR's least significant byte is `@bitCast([dr_byte_size]u8, ...)[0]`
             const dr_byte_size = @sizeOf(@TypeOf(regs.SPI1.DR.raw));
+            if (!bidi_mode or optional_write_byte != null) {
+                // In bidi mode there nothing special to do for writes,
+                // since we set BIDOE=1 ('bidi output enable') as the default,
+                // so the traffic by default goes from master to slave.
+                //
+                // The only thing that seems to be necessary,
+                // is to wait for the write to complete
+                // before anything else can be done with this SPI bus,
+                // and we do currently do this immediately after the write.
+                // We do this by waiting until BSY == 0.
+                // This seems to be undocumented, but does seem to work.
 
-            // wait unril ready for write
-            while (regs.SPI1.SR.read().TXE == 0) {
-                debugPrint("SPI1 TXE == 0\r\n", .{});
+                // wait until ready for write
+                while (regs.SPI1.SR.read().TXE == 0) {
+                    debugPrint("SPI1 TXE == 0\r\n", .{});
+                }
+                debugPrint("SPI1 TXE == 1\r\n", .{});
+
+                // write
+                const write_byte = if (optional_write_byte) |b| b else 0x77; // dummy value
+                @bitCast([dr_byte_size]u8, regs.SPI1.DR.*)[0] = write_byte;
+                debugPrint("Sent: {X:2}.\r\n", .{write_byte});
+                if (bidi_mode) {
+                    // wait for the bi-directional line to be 'free'
+                    while (regs.SPI1.SR.read().BSY == 1) {}
+                    debugPrint("SPI1.SR.BSY == 0.\r\n", .{});
+                }
             }
-            debugPrint("SPI1 TXE == 1\r\n", .{});
+            if (!bidi_mode or optional_read_pointer != null) {
+                if (bidi_mode) {
+                    // In bidi mode, we set BIDIOE=0 (disable bidi output),
+                    // which is a mode where the bus starts to read continuously,
+                    // then wait until the receive bugger has data (RXNE == 1).
+                    // and finally immediately (!) set BIDIOE=1 again.
+                    // This seems to be undocumented, but does seem to work.
+                    //
+                    // The alternative, it seems, is to wait for a calculated amount of time,
+                    // like some official library does, see
+                    // https://github.com/STMicroelectronics/32l476gdiscovery-bsp/blob/b58c2cf65d4343c50801aba5f4d256c47c7e3380/stm32l476g_discovery.c#L709-L716
+                    // (found via https://community.st.com/t5/stm32-mcus-products/strange-spi-receive-routine-in-cube-example-code/m-p/413077).
+                    regs.SPI1.CR1.modify(.{ .BIDIOE = 0 });
+                }
 
-            // write
-            const write_byte = if (optional_write_byte) |b| b else undefined; // dummy value
-            @bitCast([dr_byte_size]u8, regs.SPI1.DR.*)[0] = write_byte;
-            debugPrint("Sent: {X:2}.\r\n", .{write_byte});
+                // wait until read processed
+                while (regs.SPI1.SR.read().RXNE == 0) {
+                    // no debugPrint() here, since that would take way too much time,
+                    // and in bidi mode BIDIOE=1 would be set too late,
+                    // causing more bytes to be read.
+                }
+                if (bidi_mode) {
+                    regs.SPI1.CR1.modify(.{ .BIDIOE = 1 });
+                    debugPrint("BIDIOE set to 1 again\r\n", .{});
+                }
+                debugPrint("SPI1 RXNE == 1\r\n", .{});
 
-            // wait until read processed
-            while (regs.SPI1.SR.read().RXNE == 0) {
-                debugPrint("SPI1 RXNE == 0\r\n", .{});
+                // read
+                var data_read = regs.SPI1.DR.raw;
+                _ = regs.SPI1.SR.read(); // clear overrun flag
+                const dr_lsb = @bitCast([dr_byte_size]u8, data_read)[0];
+                debugPrint("Received: {X:2} (DR = {X:8}).\r\n", .{ dr_lsb, data_read });
+                if (optional_read_pointer) |read_pointer| read_pointer.* = dr_lsb;
             }
-            debugPrint("SPI1 RXNE == 1\r\n", .{});
-
-            // read
-            var data_read = regs.SPI1.DR.raw;
-            _ = regs.SPI1.SR.read(); // clear overrun flag
-            const dr_lsb = @bitCast([dr_byte_size]u8, data_read)[0];
-            debugPrint("Received: {X:2} (DR = {X:8}).\r\n", .{ dr_lsb, data_read });
-            if (optional_read_pointer) |read_pointer| read_pointer.* = dr_lsb;
         }
 
         /// Write all given bytes on the bus, not reading anything back.
