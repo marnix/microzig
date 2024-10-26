@@ -10,7 +10,7 @@ pub fn SpiBus(comptime index: usize) type {
     return struct {
         /// A SPI 'slave' device, selected via the given CS pin.
         /// (Default is CS=low to select.)
-        pub fn SpiDevice(comptime cs_pin: type, comptime config: DeviceConfig) type {
+        pub fn SpiDevice(comptime cs_source_pin: type, comptime config: DeviceConfig) type {
             return struct {
                 const SelfSpiDevice = @This();
 
@@ -53,14 +53,14 @@ pub fn SpiBus(comptime index: usize) type {
 
                     /// end the current transfer, releasing via the CS pin
                     pub fn end(self: *SelfTransfer) void {
-                        self.device.internal.end_transfer(cs_pin, config);
+                        self.device.internal.end_transfer(cs_source_pin, config);
                     }
                 };
 
                 /// start a new transfer, selecting using the CS pin
                 pub fn begin_transfer(self: SelfSpiDevice) !Transfer {
-                    self.internal.switch_to_device(cs_pin, config);
-                    self.internal.begin_transfer(cs_pin, config);
+                    self.internal.switch_to_device(cs_source_pin, config);
+                    self.internal.begin_transfer(cs_source_pin, config);
                     return Transfer{ .device = self };
                 }
 
@@ -111,15 +111,15 @@ pub fn SpiBus(comptime index: usize) type {
 
         /// Initialize this SPI bus and return a handle to it.
         pub fn init(config: BusConfig) InitError!SelfSpiBus {
-            clock.ensure(); // TODO: Wat?
+            clock.ensure();
             return SelfSpiBus{
                 .internal = try SystemSpi.init(config),
             };
         }
 
         /// Create (a descriptor for) a device on this SPI bus.
-        pub fn device(self: SelfSpiBus, comptime cs_pin: type, config: DeviceConfig) SpiDevice(cs_pin, config) {
-            return SpiDevice(cs_pin, config){ .internal = self.internal };
+        pub fn device(self: SelfSpiBus, comptime cs_pin: type, comptime config: DeviceConfig) SpiDevice(cs_pin.source_pin, config) {
+            return SpiDevice(cs_pin.source_pin, config){ .internal = self.internal };
         }
     };
 }
@@ -133,6 +133,9 @@ pub const BusConfig = struct {
 /// A SPI device configuration (excluding the CS pin).
 /// (There are no device configuration options yet.)
 pub const DeviceConfig = struct {
+    /// Whether or not the SPI device needs to be accessed in bidi mode,
+    /// a.k.a. 3-wire mode or half-duplex mode.
+    bidi: bool = false,
     // TODO: add common options, like clock polarity and phase, and CS polarity
 };
 

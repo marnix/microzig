@@ -78,10 +78,10 @@ pub fn Gpio(comptime pin: type, comptime config: anytype) type {
             hal.gpio.write(pin.source_pin, state);
         }
 
-        fn set_to_high() void {
+        fn setToHigh() void {
             write(.high);
         }
-        fn set_to_low() void {
+        fn setToLow() void {
             write(.low);
         }
         fn toggle() void {
@@ -99,14 +99,14 @@ pub fn Gpio(comptime pin: type, comptime config: anytype) type {
         fn set_direction(dir: Direction, output_state: State) void {
             switch (dir) {
                 .output => {
-                    hal.gpio.setOutput(pin.source_pin);
+                    hal.gpio.set_output(pin.source_pin);
                     write(output_state);
                 },
-                .input => hal.gpio.setInput(pin.source_pin),
+                .input => hal.gpio.set_input(pin.source_pin),
             }
         }
         fn get_direction() Direction {
-            if (hal.gpio.isOutput(pin.source_pin)) {
+            if (hal.gpio.is_output(pin.source_pin)) {
                 return .output;
             } else {
                 return .input;
@@ -124,7 +124,7 @@ pub fn Gpio(comptime pin: type, comptime config: anytype) type {
 
         // alternate function
         fn set_alternate_function(af: hal.gpio.AlternateFunction) void {
-            hal.gpio.setAlternateFunction(pin.source_pin, af);
+            hal.gpio.set_alternate_function(pin.source_pin, af);
         }
     };
     // return only a subset of Generic for the requested pin.
