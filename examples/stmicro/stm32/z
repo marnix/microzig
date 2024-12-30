@@ -1,0 +1,6 @@
+#!/bin/bash -xe
+zig-stable fmt --check .
+zig-stable build -freference-trace --verbose "$@"
+#st-flash --reset write zig-out/firmware/stm32f3discovery.bin 0x8000000
+        # --connect-under-reset
+openocd -f interface/stlink-v2.cfg -f target/stm32f3x.cfg -c 'program zig-out/firmware/stm32f3discovery.elf verify reset exit'
